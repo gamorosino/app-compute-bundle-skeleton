@@ -33,7 +33,7 @@ track_out = str(Path("track") / Path(track_out).name)
 
 # Optional params (mirror shell defaults)
 perc = cfg.get("perc", None)
-smooth_density = bool(cfg.get("smooth_density", True))
+smooth_density = bool(cfg.get("smooth_density", False))
 length_thr = float(cfg.get("length_thr", 0.90))
 N_points = int(cfg.get("N_points", 32))
 keep_endpoints = bool(cfg.get("keep_endpoints", False))
