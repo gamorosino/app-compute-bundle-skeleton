@@ -154,6 +154,138 @@ def get_core_streamlines(track_filename, perc=0.75, output_file=None, structural
  
     return track
 
+
+
+def get_bundle_backbone(track_filename, output_file, structural_filename, 
+                        N_points=32, perc=0.75, smooth_density=True, 
+                        length_thr=0.9,
+                        keep_endpoints=False,
+                        average_type="mean",
+                        endpoint_mode="median",       # "mean", "median", "median_project"
+                        representative=False,         # choose closest streamline instead of backbone
+                        spline_smooth=None):          # apply spline smoothing at the end
+    """
+    Compute backbone of a streamline bundle, optionally extract representative streamline,
+    and apply optional spline smoothing at the end.
+
+    endpoint_mode:
+        "mean"            → endpoints = mean(coords)
+        "median"          → endpoints = median(coords)
+        "median_project"  → project median point to closest actual streamline endpoint
+    """
+
+    # ----------------------------------------------------------
+    # 1. Load & preprocess bundle
+    # ----------------------------------------------------------
+    if perc != 0:
+        print("get core streamlines...")
+        track = get_core_streamlines(
+            track_filename,
+            structural_filename=structural_filename,
+            perc=perc,
+            smooth_density=smooth_density
+        )
+    else:
+        track, track_aff, track_header = loadTrk(track_filename)
+
+    print("Resampling streamlines to N_points =", N_points)
+    track = set_number_of_points(track, N_points)
+
+    # ----------------------------------------------------------
+    # 2. Orient streamlines consistently
+    # ----------------------------------------------------------
+    streamline_0 = track[0]
+    length = np.zeros(len(track))
+
+    for i, sl in enumerate(track):
+        dist      = np.linalg.norm((streamline_0 - sl).reshape(-1, N_points*3), axis=1)
+        dist_flip = np.linalg.norm((streamline_0 - sl[::-1]).reshape(-1, N_points*3), axis=1)
+
+        if dist_flip < dist:
+            sl = sl[::-1]
+
+        track[i] = sl
+        length[i] = streamline_length(sl)
+
+    # keep only long-enough streamlines
+    length_mask = length > (length_thr * np.max(length))
+    track = track[length_mask]
+
+    # ----------------------------------------------------------
+    # 3. Compute backbone (mean/median)
+    # ----------------------------------------------------------
+    backbone = []
+    num_points = len(track[0])
+
+    for p in range(num_points):
+        coords = np.array([sl[p] for sl in track])
+
+        # ---- Endpoint logic ----
+        if keep_endpoints and (p == 0 or p == num_points - 1):
+
+            if endpoint_mode == "mean":
+                agg = np.mean(coords, axis=0)
+
+            elif endpoint_mode == "median":
+                agg = np.median(coords, axis=0)
+
+            elif endpoint_mode == "median_project":
+                med = np.median(coords, axis=0)
+                endpoints = np.array([sl[p] for sl in track])
+                d = np.linalg.norm(endpoints - med, axis=1)
+                agg = endpoints[d.argmin()]
+
+            else:
+                raise ValueError(f"Unknown endpoint_mode: {endpoint_mode}")
+
+        # ---- Interior points ----
+        else:
+            agg = np.median(coords, axis=0) if average_type == "median" else np.mean(coords, axis=0)
+
+        backbone.append(agg)
+
+    backbone = np.array(backbone)  # shape: (N_points, 3)
+
+    # ----------------------------------------------------------
+    # 4. If representative mode → choose closest streamline
+    # ----------------------------------------------------------
+    if representative:
+        print("Selecting representative streamline (closest to backbone).")
+
+        tree = cKDTree(np.array(track).reshape(len(track), -1))
+        dist, idx = tree.query(backbone.reshape(-1), k=1)
+        rep = track[idx]
+
+        final = rep.copy()
+
+    else:
+        final = backbone.copy()
+
+    # ----------------------------------------------------------
+    # 5. Apply spline smoothing LAST
+    # ----------------------------------------------------------
+    if spline_smooth is not None:
+        print(f"Applying spline smoothing with s={spline_smooth}")
+
+        tck, u = splprep(final.T, s=float(spline_smooth))
+        u_new = np.linspace(0, 1, num_points)
+        x, y, z = splev(u_new, tck)
+        smoothed = np.vstack([x, y, z]).T
+
+        # preserve endpoints if requested (projected/median already computed)
+        if keep_endpoints:
+            smoothed[0]  = final[0]
+            smoothed[-1] = final[-1]
+
+        final = smoothed
+
+    # reshape & save
+    final = np.array([final])
+    saveTrackDipy(final, output_file, structural_filename=structural_filename)
+
+    return final
+
+
 def get_bundle_backbone_from_streamlines(
     track,
     track_aff,
